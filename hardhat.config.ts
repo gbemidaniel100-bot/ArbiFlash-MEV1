@@ -1,8 +1,7 @@
 import 'dotenv/config';
-import { defineConfig } from 'hardhat/config';
 import '@nomicfoundation/hardhat-toolbox';
 
-export default defineConfig({
+export default {
   solidity: '0.8.24',
   networks: {
     arbitrum: {
@@ -11,4 +10,4 @@ export default defineConfig({
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
   },
-});
+};
