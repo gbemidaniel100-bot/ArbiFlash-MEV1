@@ -11,6 +11,26 @@ export const V2_ROUTER_ABI = [
   },
 ] as const;
 
+export const AAVE_POOL_ABI = [
+  {
+    type: 'function',
+    name: 'FLASHLOAN_PREMIUM_TOTAL',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: 'premiumTotal', type: 'uint128' }],
+  },
+] as const;
+
+export const ERC20_ABI = [
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: 'balance', type: 'uint256' }],
+  },
+] as const;
+
 export const EXECUTOR_ABI = [
   {
     type: 'function',
