@@ -1,0 +1,21 @@
+{
+  "name": "arbiflash-mev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "start": "tsx src/index.ts",
+    "compile:contract": "hardhat compile",
+    "test:contract": "hardhat test"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "viem": "^2.21.54"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.18",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
