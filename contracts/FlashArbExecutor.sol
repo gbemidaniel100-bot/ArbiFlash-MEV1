@@ -12,13 +12,7 @@ interface IAavePool {
 }
 
 interface IUniswapV2Router {
-    function swapExactTokensForTokens(
-        uint256 amountIn,
-        uint256 amountOutMin,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external returns (uint256[] memory amounts);
+    function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts);
 }
 
 contract FlashArbExecutor {
@@ -30,6 +24,7 @@ contract FlashArbExecutor {
     error InvalidAmount();
     error InvalidProfitFloor();
     error TradeInProgress();
+    error DeadlineExpired();
     error NotProfitable(uint256 finalAmount, uint256 requiredAmount);
     error TokenTransferFailed();
     error TokenApprovalFailed();
@@ -64,89 +59,46 @@ contract FlashArbExecutor {
         emit RouterPermissionChanged(router, allowed);
     }
 
-    function startArbitrage(
-        address asset,
-        uint256 amount,
-        address routerA,
-        address[] calldata pathA,
-        uint256 minOutA,
-        address routerB,
-        address[] calldata pathB,
-        uint256 minOutB,
-        uint256 minProfit
-    ) external onlyOwner {
+    function startArbitrage(address asset, uint256 amount, address routerA, address[] calldata pathA, uint256 minOutA, address routerB, address[] calldata pathB, uint256 minOutB, uint256 minProfit, uint256 deadline) external onlyOwner {
         if (asset == address(0) || amount == 0) revert InvalidAmount();
         if (minProfit == type(uint256).max) revert InvalidProfitFloor();
+        if (deadline < block.timestamp) revert DeadlineExpired();
         if (tradeInProgress) revert TradeInProgress();
         _validateTrade(asset, routerA, pathA, routerB, pathB);
 
         tradeInProgress = true;
-        IAavePool(pool).flashLoanSimple(
-            address(this),
-            asset,
-            amount,
-            abi.encode(routerA, pathA, minOutA, routerB, pathB, minOutB, minProfit),
-            0
-        );
+        IAavePool(pool).flashLoanSimple(address(this), asset, amount, abi.encode(routerA, pathA, minOutA, routerB, pathB, minOutB, minProfit, deadline), 0);
         tradeInProgress = false;
     }
 
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external returns (bool) {
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params) external returns (bool) {
         if (msg.sender != pool) revert NotPool();
         if (initiator != address(this) || !tradeInProgress) revert InvalidInitiator();
 
-        (
-            address routerA,
-            address[] memory pathA,
-            uint256 minOutA,
-            address routerB,
-            address[] memory pathB,
-            uint256 minOutB,
-            uint256 minProfit
-        ) = abi.decode(params, (address, address[], uint256, address, address[], uint256, uint256));
-
+        (address routerA, address[] memory pathA, uint256 minOutA, address routerB, address[] memory pathB, uint256 minOutB, uint256 minProfit, uint256 deadline) = abi.decode(params, (address, address[], uint256, address, address[], uint256, uint256, uint256));
+        if (deadline < block.timestamp) revert DeadlineExpired();
         _validateTrade(asset, routerA, pathA, routerB, pathB);
 
-        // Existing balances must never subsidize a losing flash-loan trade.
         uint256 preLoanBalance = IERC20(asset).balanceOf(address(this));
         address intermediate = pathA[pathA.length - 1];
 
         _forceApprove(asset, routerA, amount);
         uint256 beforeIntermediate = IERC20(intermediate).balanceOf(address(this));
-        IUniswapV2Router(routerA).swapExactTokensForTokens(
-            amount,
-            minOutA,
-            pathA,
-            address(this),
-            block.timestamp
-        );
+        IUniswapV2Router(routerA).swapExactTokensForTokens(amount, minOutA, pathA, address(this), deadline);
         uint256 intermediateReceived = IERC20(intermediate).balanceOf(address(this)) - beforeIntermediate;
         if (intermediateReceived == 0) revert InvalidAmount();
 
         _forceApprove(intermediate, routerB, intermediateReceived);
-        IUniswapV2Router(routerB).swapExactTokensForTokens(
-            intermediateReceived,
-            minOutB,
-            pathB,
-            address(this),
-            block.timestamp
-        );
+        IUniswapV2Router(routerB).swapExactTokensForTokens(intermediateReceived, minOutB, pathB, address(this), deadline);
 
         uint256 required = preLoanBalance + amount + premium;
         uint256 finalAmount = IERC20(asset).balanceOf(address(this));
-        if (finalAmount < required || finalAmount - required < minProfit) {
-            revert NotProfitable(finalAmount, required + minProfit);
-        }
+        if (finalAmount < required) revert NotProfitable(finalAmount, required);
+        uint256 surplus = finalAmount - required;
+        if (surplus < minProfit) revert NotProfitable(finalAmount, required + minProfit);
 
         _forceApprove(asset, pool, amount + premium);
-        uint256 profit = finalAmount - required;
-        emit ArbitrageExecuted(asset, amount, premium, profit);
+        emit ArbitrageExecuted(asset, amount, premium, surplus);
         return true;
     }
 
@@ -162,22 +114,17 @@ contract FlashArbExecutor {
         if (!ok) revert TokenTransferFailed();
     }
 
-    function _validateTrade(
-        address asset,
-        address routerA,
-        address[] memory pathA,
-        address routerB,
-        address[] memory pathB
-    ) internal view {
+    function _validateTrade(address asset, address routerA, address[] memory pathA, address routerB, address[] memory pathB) internal view {
         if (!allowedRouter[routerA]) revert RouterNotAllowed(routerA);
         if (!allowedRouter[routerB]) revert RouterNotAllowed(routerB);
         if (pathA.length < 2 || pathB.length < 2) revert InvalidPath();
         if (pathA[0] != asset || pathB[pathB.length - 1] != asset) revert InvalidPath();
         if (pathA[pathA.length - 1] != pathB[0]) revert InvalidPath();
+        for (uint256 i; i < pathA.length; ++i) if (pathA[i] == address(0)) revert InvalidPath();
+        for (uint256 i; i < pathB.length; ++i) if (pathB[i] == address(0)) revert InvalidPath();
     }
 
     function _forceApprove(address token, address spender, uint256 amount) internal {
-        // Reset-first is compatible with tokens that reject changing a non-zero allowance directly.
         if (!IERC20(token).approve(spender, 0)) revert TokenApprovalFailed();
         if (!IERC20(token).approve(spender, amount)) revert TokenApprovalFailed();
     }
