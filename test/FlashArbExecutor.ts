@@ -50,12 +50,12 @@ describe('FlashArbExecutor', function () {
     expect(premium).to.equal(ethers.parseEther('0.0009'));
   });
 
-  it('cannot use existing executor funds to make a losing trade look profitable', async function () {
+  it('cannot count existing executor funds toward the required new profit', async function () {
     const { weth, usdc, routerA, routerB, executor } = await fixture();
     await weth.mint(executor, ethers.parseEther('0.5'));
     await expect(executor.startArbitrage(
       weth, ethers.parseEther('1'), routerA, [weth, usdc], 0,
-      routerB, [usdc, weth], 0, 0, await deadline(),
+      routerB, [usdc, weth], 0, ethers.parseEther('0.2'), await deadline(),
     )).to.be.revertedWithCustomError(executor, 'NotProfitable');
     expect(await weth.balanceOf(executor)).to.equal(ethers.parseEther('0.5'));
   });
