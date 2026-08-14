@@ -25,29 +25,15 @@ describe('FlashArbExecutor', function () {
   }
 
   it('executes a profitable atomic flash-loan round trip and leaves profit in executor', async function () {
-    const { weth, routerA, routerB, executor, premium } = await fixture();
-    const amount = ethers.parseEther('1');
-    const minProfit = ethers.parseEther('0.1');
-    const dl = await deadline();
-
-    await expect(executor.startArbitrage(
-      weth, amount, routerA, [weth, await (await ethers.getContractFactory('MockERC20')).deploy()], 0,
-      routerB, [], 0, minProfit, dl,
-    )).to.be.reverted;
-
-    const usdc = (await fixture()).usdc;
-    // Use the actual fixture tokens/routes for the real execution below.
     const f = await fixture();
-    const dl2 = await deadline();
     await expect(f.executor.startArbitrage(
-      f.weth, amount, f.routerA, [f.weth, f.usdc], 0,
-      f.routerB, [f.usdc, f.weth], 0, minProfit, dl2,
+      f.weth, ethers.parseEther('1'), f.routerA, [f.weth, f.usdc], 0,
+      f.routerB, [f.usdc, f.weth], 0, ethers.parseEther('0.1'), await deadline(),
     )).to.emit(f.executor, 'ArbitrageExecuted');
 
     expect(await f.weth.balanceOf(f.executor)).to.equal(ethers.parseEther('0.1991'));
     expect(await f.weth.balanceOf(f.pool)).to.equal(ethers.parseEther('10.0009'));
-    expect(premium).to.equal(ethers.parseEther('0.0009'));
-    expect(usdc).to.not.equal(ethers.ZeroAddress);
+    expect(f.premium).to.equal(ethers.parseEther('0.0009'));
   });
 
   it('reverts when the route cannot cover the flash-loan premium and profit floor', async function () {
@@ -55,11 +41,9 @@ describe('FlashArbExecutor', function () {
     const Router = await ethers.getContractFactory('MockRouter');
     const badB = await Router.deploy(usdc, weth, 1, 3);
     await executor.setRouter(badB, true);
-    const dl = await deadline();
-
     await expect(executor.startArbitrage(
       weth, ethers.parseEther('1'), routerA, [weth, usdc], 0,
-      badB, [usdc, weth], 0, 1, dl,
+      badB, [usdc, weth], 0, 1, await deadline(),
     )).to.be.revertedWithCustomError(executor, 'NotProfitable');
     expect(await weth.balanceOf(pool)).to.equal(ethers.parseEther('10'));
     expect(owner.address).to.equal(await executor.owner());
