@@ -3,6 +3,11 @@ on:
   workflow_dispatch:
   push:
     branches: ['codex/mini-mev-bot']
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   audit:
     runs-on: ubuntu-latest
