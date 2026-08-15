@@ -1,0 +1,20 @@
+name: audit-baseline
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/mini-mev-bot']
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --ignore-scripts
+      - run: npm audit --audit-level=high
