@@ -5,6 +5,7 @@ import { arbitrum } from 'viem/chains';
 import { ADDRESSES } from './addresses.js';
 import { AAVE_POOL_ABI, ERC20_ABI, EXECUTOR_ABI } from './abis.js';
 import { adaptiveCandidateSizes, loadV2Pool, quoteFromPool, type V2Pool } from './quote.js';
+import { PendingNonceManager } from './nonce.js';
 import { PAIRS, VENUES, venueByRouter, type V2Venue } from './venues.js';
 
 const rpcUrl = process.env.RPC_URL || 'https://arb1.arbitrum.io/rpc';
@@ -25,18 +26,8 @@ const publicClient = createPublicClient({ chain: arbitrum, transport: http(rpcUr
 
 type PoolKey = `${string}:${string}:${string}`;
 type Opportunity = {
-  amount: bigint;
-  first: bigint;
-  final: bigint;
-  expectedProfit: bigint;
-  estimatedPremium: bigint;
-  routerA: Address;
-  routerB: Address;
-  pathA: Address[];
-  pathB: Address[];
-  pairId: string;
-  blockNumber: bigint;
-  priceImpactBps: bigint;
+  amount: bigint; first: bigint; final: bigint; expectedProfit: bigint; estimatedPremium: bigint;
+  routerA: Address; routerB: Address; pathA: Address[]; pathB: Address[]; pairId: string; blockNumber: bigint; priceImpactBps: bigint;
 };
 
 function minOut(amount: bigint): bigint {
@@ -46,9 +37,7 @@ function minOut(amount: bigint): bigint {
 function assertAddress(value: string | undefined, name: string): asserts value is Address {
   if (!value || !/^0x[a-fA-F0-9]{40}$/.test(value)) throw new Error(`${name} is missing or invalid`);
 }
-function poolKey(venue: V2Venue, tokenIn: Address, tokenOut: Address): PoolKey {
-  return `${venue.id}:${tokenIn.toLowerCase()}:${tokenOut.toLowerCase()}`;
-}
+function poolKey(venue: V2Venue, tokenIn: Address, tokenOut: Address): PoolKey { return `${venue.id}:${tokenIn.toLowerCase()}:${tokenOut.toLowerCase()}`; }
 
 async function flashPremiumBps(): Promise<bigint> {
   return BigInt(await publicClient.readContract({ address: ADDRESSES.aavePool, abi: AAVE_POOL_ABI, functionName: 'FLASHLOAN_PREMIUM_TOTAL' }));
@@ -89,14 +78,11 @@ async function findOpportunity(blockNumber: bigint): Promise<Opportunity | null>
           const estimatedPremium = (amount * premiumBps + 9_999n) / 10_000n;
           const expectedProfit = second.amountOut > amount + estimatedPremium ? second.amountOut - amount - estimatedPremium : 0n;
           if (expectedProfit < targetProfit) continue;
-          if (!best || expectedProfit > best.expectedProfit) {
-            best = {
-              amount, first: first.amountOut, final: second.amountOut, expectedProfit, estimatedPremium,
-              routerA: venueA.router, routerB: venueB.router,
-              pathA: [ADDRESSES.weth, pair.token], pathB: [pair.token, ADDRESSES.weth],
-              pairId: pair.id, blockNumber, priceImpactBps: first.priceImpactBps + second.priceImpactBps,
-            };
-          }
+          if (!best || expectedProfit > best.expectedProfit) best = {
+            amount, first: first.amountOut, final: second.amountOut, expectedProfit, estimatedPremium,
+            routerA: venueA.router, routerB: venueB.router, pathA: [ADDRESSES.weth, pair.token], pathB: [pair.token, ADDRESSES.weth],
+            pairId: pair.id, blockNumber, priceImpactBps: first.priceImpactBps + second.priceImpactBps,
+          };
         }
       }
     }
@@ -115,41 +101,29 @@ async function estimateGasCost(account: Address, opportunity: Opportunity, minPr
   return { gas, gasCost };
 }
 
-let nextNonce: number | undefined;
-let nonceLock: Promise<void> = Promise.resolve();
 const pending = new Set<Hex>();
+const nonceManager = new PendingNonceManager(() => publicClient.getTransactionCount({ address: process.env.SIGNER_ADDRESS as Address, blockTag: 'pending' }));
 
-async function withNonceLock<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = nonceLock;
-  let release!: () => void;
-  nonceLock = new Promise<void>((resolve) => { release = resolve; });
-  await previous;
-  try { return await fn(); } finally { release(); }
-}
-
-async function submitWithManagedNonce(walletClient: ReturnType<typeof createWalletClient>, account: ReturnType<typeof privateKeyToAccount>, request: Parameters<typeof walletClient.writeContract>[0]): Promise<Hex> {
-  return withNonceLock(async () => {
-    if (nextNonce === undefined) nextNonce = await publicClient.getTransactionCount({ address: account.address, blockTag: 'pending' });
-    const nonce = nextNonce++;
-    try {
-      const hash = await walletClient.writeContract({ ...request, nonce });
-      pending.add(hash);
-      void publicClient.waitForTransactionReceipt({ hash }).then(() => pending.delete(hash), () => pending.delete(hash));
-      return hash;
-    } catch (error) {
-      nextNonce = undefined;
-      throw error;
-    }
-  });
+async function submitWithManagedNonce(walletClient: ReturnType<typeof createWalletClient>, request: Parameters<typeof walletClient.writeContract>[0]): Promise<Hex> {
+  const nonce = await nonceManager.reserve();
+  try {
+    const hash = await walletClient.writeContract({ ...request, nonce });
+    pending.add(hash);
+    void publicClient.waitForTransactionReceipt({ hash }).then(() => pending.delete(hash), () => pending.delete(hash));
+    return hash;
+  } catch (error) {
+    nonceManager.reset();
+    throw error;
+  }
 }
 
 async function executeOpportunity(opportunity: Opportunity) {
   assertAddress(executor, 'EXECUTOR_ADDRESS');
   const simulationKey = process.env.PRIVATE_KEY || process.env.SIMULATION_ACCOUNT;
   if (!simulationKey) throw new Error(dryRun ? 'SIMULATION_ACCOUNT or PRIVATE_KEY is required when EXECUTOR_ADDRESS is set' : 'PRIVATE_KEY is required when DRY_RUN=false');
-  const account = simulationKey.startsWith('0x') && simulationKey.length === 66
-    ? privateKeyToAccount(simulationKey as Hex)
-    : ({ address: simulationKey as Address } as ReturnType<typeof privateKeyToAccount>);
+  const isPrivateKey = simulationKey.startsWith('0x') && simulationKey.length === 66;
+  const account = isPrivateKey ? privateKeyToAccount(simulationKey as Hex) : ({ address: simulationKey as Address } as ReturnType<typeof privateKeyToAccount>);
+  if (!process.env.SIGNER_ADDRESS) process.env.SIGNER_ADDRESS = account.address;
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + deadlineSeconds;
   const { gas, gasCost } = await estimateGasCost(account.address, opportunity, targetProfit, deadline);
   const requiredProfitFloor = targetProfit + gasCost;
@@ -164,8 +138,9 @@ async function executeOpportunity(opportunity: Opportunity) {
   });
   if (dryRun) { console.log(`DRY RUN: simulation passed | pair=${opportunity.pairId} size=${formatEther(opportunity.amount)} WETH gas=${gas} reserve=${formatEther(gasCost)} WETH`); return; }
   if (pending.size >= maxPendingTxs) { console.log(`skip: ${pending.size} transactions already pending`); return; }
-  const walletClient = createWalletClient({ account: account as ReturnType<typeof privateKeyToAccount>, chain: arbitrum, transport: http(rpcUrl) });
-  const hash = await submitWithManagedNonce(walletClient, account as ReturnType<typeof privateKeyToAccount>, simulation.request);
+  if (!isPrivateKey) throw new Error('PRIVATE_KEY is required when DRY_RUN=false');
+  const walletClient = createWalletClient({ account, chain: arbitrum, transport: http(rpcUrl) });
+  const hash = await submitWithManagedNonce(walletClient, simulation.request);
   console.log('submitted', hash, 'pending=', pending.size);
 }
 
