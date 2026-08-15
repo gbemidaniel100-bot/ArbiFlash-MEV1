@@ -1,16 +1,16 @@
-import { zeroAddress, type Address, type PublicClient } from 'viem';
+import { zeroAddress, type Address, type BlockNumber, type PublicClient } from 'viem';
 import { V2_FACTORY_ABI, V2_PAIR_ABI } from './abis.js';
 import type { V2Venue } from './venues.js';
 
 export type V2Pool = { pair: Address; tokenIn: Address; tokenOut: Address; reserveIn: bigint; reserveOut: bigint };
 export type ReserveQuote = { amountIn: bigint; amountOut: bigint; pair: Address; reserveIn: bigint; reserveOut: bigint; priceImpactBps: bigint };
 
-export async function loadV2Pool(client: PublicClient, venue: V2Venue, tokenIn: Address, tokenOut: Address): Promise<V2Pool | null> {
-  const pair = await client.readContract({ address: venue.factory, abi: V2_FACTORY_ABI, functionName: 'getPair', args: [tokenIn, tokenOut] });
+export async function loadV2Pool(client: PublicClient, venue: V2Venue, tokenIn: Address, tokenOut: Address, blockNumber?: BlockNumber): Promise<V2Pool | null> {
+  const pair = await client.readContract({ address: venue.factory, abi: V2_FACTORY_ABI, functionName: 'getPair', args: [tokenIn, tokenOut], blockNumber });
   if (pair === zeroAddress) return null;
   const [token0, reserves] = await Promise.all([
-    client.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: 'token0' }),
-    client.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: 'getReserves' }),
+    client.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: 'token0', blockNumber }),
+    client.readContract({ address: pair, abi: V2_PAIR_ABI, functionName: 'getReserves', blockNumber }),
   ]);
   const reserveIn = token0.toLowerCase() === tokenIn.toLowerCase() ? reserves[0] : reserves[1];
   const reserveOut = token0.toLowerCase() === tokenIn.toLowerCase() ? reserves[1] : reserves[0];
