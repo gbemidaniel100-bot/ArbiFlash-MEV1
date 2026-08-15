@@ -7,7 +7,7 @@ interface IUniswapV2Router { function swapExactTokensForTokens(uint256 amountIn,
 
 contract FlashArbExecutor {
     error NotOwner(); error NotPool(); error InvalidInitiator(); error RouterNotAllowed(address router); error InvalidPath(); error InvalidAmount(); error InvalidProfitFloor(); error TradeInProgress(); error DeadlineExpired(); error NotProfitable(uint256 finalAmount, uint256 requiredAmount); error TokenTransferFailed(); error TokenApprovalFailed();
-    address public immutable owner; address public immutable pool; mapping(address => bool) public allowedRouter; bool private tradeInProgress;
+    address public immutable owner; address public immutable pool; mapping(address => bool) public allowedRouter; bool private tradeInProgress; bool private callbackConsumed;
     event RouterPermissionChanged(address indexed router, bool allowed); event ArbitrageExecuted(address indexed asset, uint256 borrowed, uint256 premium, uint256 profit); event ProfitWithdrawn(address indexed token, uint256 amount, address indexed recipient);
     modifier onlyOwner() { if (msg.sender != owner) revert NotOwner(); _; }
 
@@ -23,12 +23,15 @@ contract FlashArbExecutor {
         _validateTrade(asset, routerA, pathA, routerB, pathB);
         uint256 preLoanBalance = IERC20(asset).balanceOf(address(this));
         tradeInProgress = true;
+        callbackConsumed = false;
         IAavePool(pool).flashLoanSimple(address(this), asset, amount, abi.encode(routerA, pathA, minOutA, routerB, pathB, minOutB, minProfit, deadline, preLoanBalance), 0);
         tradeInProgress = false;
+        callbackConsumed = false;
     }
 
     function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params) external returns (bool) {
-        if (msg.sender != pool) revert NotPool(); if (initiator != address(this) || !tradeInProgress) revert InvalidInitiator();
+        if (msg.sender != pool) revert NotPool(); if (initiator != address(this) || !tradeInProgress) revert InvalidInitiator(); if (callbackConsumed) revert TradeInProgress();
+        callbackConsumed = true;
         (address routerA, address[] memory pathA, uint256 minOutA, address routerB, address[] memory pathB, uint256 minOutB, uint256 minProfit, uint256 deadline, uint256 preLoanBalance) = abi.decode(params, (address, address[], uint256, address, address[], uint256, uint256, uint256, uint256));
         if (deadline < block.timestamp) revert DeadlineExpired(); _validateTrade(asset, routerA, pathA, routerB, pathB);
         address intermediate = pathA[pathA.length - 1];
