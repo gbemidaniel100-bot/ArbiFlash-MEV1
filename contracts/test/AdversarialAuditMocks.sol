@@ -24,6 +24,8 @@ contract ReentrantPool {
         require(IFlashReceiverAudit(receiver).executeOperation(asset, amount, premium, receiver, params), 'callback-1');
         if (reenter) {
             callbackCount = 1;
+            // Give the receiver another unit of capital so the second callback can complete.
+            IERC20Audit(asset).transfer(receiver, amount);
             require(IFlashReceiverAudit(receiver).executeOperation(asset, amount, premium, receiver, params), 'callback-2');
         }
     }
